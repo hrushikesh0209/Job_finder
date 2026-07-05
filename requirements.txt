@@ -1,0 +1,32 @@
+# ── Core (required) ───────────────────────────────────────────────────────────
+streamlit>=1.35.0            # Web UI  (run: streamlit run app.py)
+pandas>=2.0.0
+openpyxl>=3.1.0              # Formatted Excel export
+python-docx>=1.1.0           # Read .docx CVs
+scikit-learn>=1.3.0          # TF-IDF match scoring
+requests>=2.31.0             # HTTP scraping
+beautifulsoup4>=4.12.0       # HTML parsing
+lxml>=4.9.0                  # Fast BeautifulSoup backend (falls back to html.parser if missing)
+pdfplumber>=0.10.0           # Read .pdf CVs  (preferred — better layout preservation)
+PyPDF2>=3.0.0                # Read .pdf CVs  (fallback when pdfplumber unavailable)
+
+# ── Optional — REQUIRED for Indeed & Naukri (headless real browser) ──────────
+# pip install playwright
+# playwright install chromium
+# Playwright is the only working method: Indeed uses a JS challenge (Cloudflare)
+# and Naukri enforces reCAPTCHA + client-side hydration. Both defeat plain HTTP.
+# Without Playwright these two boards are skipped with a logged warning.
+
+# ── Semantic CV matching (recommended) ────────────────────────────────────────
+# Downloads a 22 MB model on first use; the code falls back to TF-IDF without it.
+sentence-transformers>=2.7.0
+
+# ── AI features: suggestions, cover letter, tailored CV, interview prep ──────
+anthropic>=0.40.0                    # Claude (default provider)
+# pip install openai                 # ChatGPT (OpenAI) — optional
+# pip install google-generativeai    # Gemini (Google) — optional
+
+# ── Optional — key-based job boards (free keys) ───────────────────────────────
+# Adzuna:  set ADZUNA_APP_ID + ADZUNA_APP_KEY   (developer.adzuna.com)
+# Jooble:  set JOOBLE_API_KEY                    (jooble.org/api/about)
+# Reed:    set REED_API_KEY to use the official API (reed.co.uk/developers)

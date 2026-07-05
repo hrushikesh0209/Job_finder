@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe -m py_compile app.py scraper.py cv_analyzer.py locations.py run.py excel_exporter.py)",
+      "PowerShell(if \\($?\\) { \"ALL COMPILE OK\" })",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe _smoke_test.py)",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe _smoke_live.py)",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe -m py_compile app.py scraper.py locations.py excel_exporter.py)",
+      "PowerShell(if \\($?\\) { \"COMPILE OK\" })",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe _live_test_new_boards.py)",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe _debug_apis.py)",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe _e2e_test.py)",
+      "Bash(python -c \"import lxml; print\\('lxml', lxml.__version__\\)\")",
+      "Bash(python -c \"import sentence_transformers; print\\('st ok'\\)\")",
+      "Bash(python -m py_compile app.py scraper.py cv_analyzer.py)",
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile app.py)",
+      "Bash(python -c \"import app\")",
+      "Bash(grep -iv \"scriptruncontext\\\\|memorycache\\\\|session_state\\\\|streamlit run\\\\|warning: t\\\\|^$\")",
+      "Bash(grep -vi \"scriptruncontext\\\\|memorycache\\\\|session_state\\\\|streamlit\\\\|warning\\\\|^$\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"import anthropic; print\\('anthropic', anthropic.__version__\\)\")",
+      "WebSearch",
+      "Bash(python -m py_compile cv_analyzer.py)"
+    ]
+  }
+}
