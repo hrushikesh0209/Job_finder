@@ -1,0 +1,42 @@
+{
+  "timezone": "Asia/Kolkata",
+  "profiles": [
+    {
+      "id": "example-software-engineer",
+      "label": "Example software roles",
+      "enabled": false,
+      "titles": [
+        "Software Engineer"
+      ],
+      "country": "Netherlands",
+      "city": "",
+      "sites": [
+        "linkedin"
+      ],
+      "max_results": 30,
+      "hours_old": 24,
+      "remote_only": false,
+      "experience": {
+        "enabled": true,
+        "min_years": 2,
+        "max_years": 5
+      },
+      "schedule": {
+        "kind": "interval",
+        "hours": 3
+      },
+      "filters": {
+        "match": {
+          "enabled": true,
+          "minimum": 50
+        },
+        "ats": {
+          "enabled": true,
+          "minimum": 60
+        },
+        "score_logic": "either",
+        "max_email_jobs": 20
+      }
+    }
+  ]
+}

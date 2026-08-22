@@ -1,0 +1,146 @@
+name: Scheduled Job Alerts
+
+"on":
+  schedule:
+    - cron: "17 * * * *"
+      timezone: "Asia/Kolkata"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run due alerts, preview without sending, or test Gmail"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - due
+          - test-email
+      profile_id:
+        description: "Optional profile ID to force-run"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: job-finder-scheduled-alerts
+  cancel-in-progress: false
+
+jobs:
+  alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      JOB_ALERT_STATE_PATH: ${{ runner.temp }}/job-alert-state.json
+
+    steps:
+      - name: Check out portal and extension
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: extensions/job_alerts/requirements.txt
+
+      - name: Restore delivery state
+        shell: bash
+        run: |
+          if git fetch origin alerts-state:refs/remotes/origin/alerts-state; then
+            git show origin/alerts-state:job-alert-state.json > "$JOB_ALERT_STATE_PATH"
+          else
+            printf '{"profiles":{}}\n' > "$JOB_ALERT_STATE_PATH"
+          fi
+
+      - name: Check due profiles
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.mode != 'test-email' }}
+        id: due
+        shell: bash
+        env:
+          PROFILE_ID: ${{ github.event.inputs.profile_id }}
+        run: |
+          args=(check-due --state "$JOB_ALERT_STATE_PATH" --github-output "$GITHUB_OUTPUT")
+          if [[ -n "$PROFILE_ID" ]]; then
+            args+=(--profile-id "$PROFILE_ID")
+          fi
+          python -m extensions.job_alerts "${args[@]}"
+
+      - name: Send Gmail test
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'test-email' }}
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+        run: python -m extensions.job_alerts test-email
+
+      - name: Cache semantic matching model
+        if: ${{ steps.due.outputs.due == 'true' }}
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.cache/huggingface
+          key: huggingface-bge-small-en-v1-${{ runner.os }}
+
+      - name: Install alert extension dependencies
+        if: ${{ steps.due.outputs.due == 'true' }}
+        run: python -m pip install -r extensions/job_alerts/requirements.txt
+
+      - name: Install Playwright for browser-backed boards
+        if: ${{ steps.due.outputs.due == 'true' && steps.due.outputs.needs_playwright == 'true' }}
+        run: |
+          python -m pip install "playwright>=1.49.0"
+          python -m playwright install --with-deps chromium
+
+      - name: Run job alerts
+        if: ${{ steps.due.outputs.due == 'true' }}
+        id: execute
+        shell: bash
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          PROFILE_ID: ${{ github.event.inputs.profile_id }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          JOBFINDER_CV_GZIP_BASE64: ${{ secrets.JOBFINDER_CV_GZIP_BASE64 }}
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
+          JOOBLE_API_KEY: ${{ secrets.JOOBLE_API_KEY }}
+          REED_API_KEY: ${{ secrets.REED_API_KEY }}
+        run: |
+          if [[ -n "$PROFILE_ID" ]]; then
+            args=(run-profile --id "$PROFILE_ID" --state "$JOB_ALERT_STATE_PATH")
+          else
+            args=(run-due --state "$JOB_ALERT_STATE_PATH")
+          fi
+          if [[ "$MODE" == "dry-run" ]]; then
+            args+=(--dry-run)
+          fi
+          python -m extensions.job_alerts "${args[@]}"
+
+      - name: Publish delivery state
+        if: ${{ always() && steps.execute.outcome != 'skipped' && github.event.inputs.mode != 'dry-run' }}
+        shell: bash
+        env:
+          STATE_TREE: ${{ runner.temp }}/alerts-state-tree
+        run: |
+          if git show-ref --verify --quiet refs/remotes/origin/alerts-state; then
+            git worktree add --detach "$STATE_TREE" origin/alerts-state
+            git -C "$STATE_TREE" switch -C alerts-state
+          else
+            git worktree add --detach "$STATE_TREE"
+            git -C "$STATE_TREE" switch --orphan alerts-state
+            git -C "$STATE_TREE" rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp "$JOB_ALERT_STATE_PATH" "$STATE_TREE/job-alert-state.json"
+          git -C "$STATE_TREE" config user.name "github-actions[bot]"
+          git -C "$STATE_TREE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$STATE_TREE" add job-alert-state.json
+          if git -C "$STATE_TREE" diff --cached --quiet; then
+            exit 0
+          fi
+          git -C "$STATE_TREE" commit -m "Update job alert delivery state"
+          git -C "$STATE_TREE" push origin HEAD:alerts-state

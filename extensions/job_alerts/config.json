@@ -1,0 +1,42 @@
+{
+  "timezone": "Asia/Kolkata",
+  "profiles": [
+    {
+      "id": "1st-seach",
+      "label": "1st seach",
+      "enabled": false,
+      "titles": [
+        "Software Engineer"
+      ],
+      "country": "Netherlands",
+      "city": "",
+      "sites": [
+        "linkedin"
+      ],
+      "max_results": 30,
+      "hours_old": 4,
+      "remote_only": true,
+      "experience": {
+        "enabled": true,
+        "min_years": 2,
+        "max_years": 5
+      },
+      "schedule": {
+        "kind": "interval",
+        "hours": 3
+      },
+      "filters": {
+        "match": {
+          "enabled": true,
+          "minimum": 50
+        },
+        "ats": {
+          "enabled": true,
+          "minimum": 60
+        },
+        "score_logic": "either",
+        "max_email_jobs": 20
+      }
+    }
+  ]
+}
