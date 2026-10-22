@@ -1213,6 +1213,9 @@ else:
 | Germany / Austria | LinkedIn, Indeed, Arbeitnow |
 | All others (incl. India, UK, UAE, Australia, SE Asia) | LinkedIn, Indeed (country site) |
 
+Every country also gets **Company career sites** — public Greenhouse / Lever / Ashby feeds of the
+companies in `company_boards.json` (fresh postings, full descriptions, apply directly).
+
 Adzuna / Jooble / Reed API are added automatically when their keys are set.
 Naukri, Bayt, Seek, JobStreet and Rozee block automated requests — still selectable, not pre-selected.
             """

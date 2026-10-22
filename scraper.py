@@ -6,7 +6,8 @@ Supported platforms:
   linkedin, indeed, naukri (India), seek (AU/NZ), jobstreet (SE Asia),
   bayt (Middle East), reed (UK), rozee (Pakistan),
   remoteok / remotive / jobicy (remote — open JSON APIs),
-  arbeitnow (Germany/EU — open API), themuse (US/global — open API)
+  arbeitnow (Germany/EU — open API), themuse (US/global — open API),
+  companies (Greenhouse/Lever/Ashby public career feeds — company_boards.json)
 
 Performance:
   - All selected sites scraped in parallel (ThreadPoolExecutor)
@@ -17,6 +18,7 @@ Performance:
 
 import os
 import re
+import html
 import json
 import math
 import time
@@ -53,7 +55,7 @@ except ImportError:
 SUPPORTED_SITES = [
     "linkedin", "indeed", "remoteok", "remotive", "jobicy", "arbeitnow",
     "themuse", "naukri", "seek", "jobstreet", "bayt", "reed", "rozee",
-    "adzuna", "jooble",
+    "adzuna", "jooble", "companies",
 ]
 
 # site key → the label written into the DataFrame's `site` column
@@ -63,6 +65,7 @@ SITE_LABELS: dict[str, str] = {
     "themuse": "The Muse",    "naukri": "Naukri",       "seek": "Seek",
     "jobstreet": "JobStreet", "bayt": "Bayt",           "reed": "Reed",
     "rozee": "Rozee",         "adzuna": "Adzuna",       "jooble": "Jooble",
+    "companies": "Company sites",
 }
 
 __all__ = ["search_jobs", "search_jobs_multi", "fetch_job_page_texts",
@@ -393,6 +396,9 @@ def search_jobs(
         "rozee":     lambda: _rozee_search(keyword, location, max_results, hours_old),
         "adzuna":    lambda: _adzuna_search(keyword, location, max_results, hours_old, country),
         "jooble":    lambda: _jooble_search(keyword, location, max_results, hours_old),
+        "companies": lambda: _company_boards_search(
+            keyword, location, max_results, hours_old, country
+        ),
     }
 
     frames: list[pd.DataFrame] = []
@@ -1698,6 +1704,238 @@ def _bayt_search(keyword, location, max_results, hours_old, country_slug="intern
 
     logger.info(f"Bayt: {len(jobs)} listings collected")
     return _to_dataframe(jobs, "Bayt")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Company career sites  (Greenhouse / Lever / Ashby public job-board APIs)
+# ──────────────────────────────────────────────────────────────────────────────
+# Many product companies publish every opening through their ATS's public,
+# key-less JSON feed. These postings are fresh, carry full descriptions, and
+# link straight to the company's own application form — applying there early
+# is the best route to a screening call. The company list lives in
+# company_boards.json so it can be edited without touching code.
+
+_COMPANY_BOARDS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "company_boards.json"
+)
+_ATS_FEED_TTL = 900   # seconds — multi-title searches reuse one download
+_ats_feed_cache: dict[tuple[str, str], tuple[float, list]] = {}
+_ats_feed_lock = threading.Lock()
+
+# Common alternate city spellings in ATS location strings
+_CITY_ALIASES: dict[str, list[str]] = {
+    "bengaluru": ["bengaluru", "bangalore"],
+    "gurugram":  ["gurugram", "gurgaon"],
+    "mumbai":    ["mumbai", "bombay"],
+    "chennai":   ["chennai", "madras"],
+    "kolkata":   ["kolkata", "calcutta"],
+    "delhi":     ["delhi", "new delhi", "ncr"],
+    "kochi":     ["kochi", "cochin"],
+}
+
+# ISO codes some feeds use (Lever `country`, Ashby addressCountry)
+_COUNTRY_CODES: dict[str, str] = {
+    "India": "IN", "United States": "US", "United Kingdom": "GB", "Canada": "CA",
+    "Germany": "DE", "Netherlands": "NL", "Singapore": "SG", "Australia": "AU",
+    "Ireland": "IE", "France": "FR", "Spain": "ES", "Poland": "PL", "UAE": "AE",
+}
+
+
+def _load_company_boards() -> dict[str, dict[str, str]]:
+    try:
+        with open(_COMPANY_BOARDS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(f"Company sites: cannot read company_boards.json ({e})")
+        return {}
+    return {ats: data.get(ats) or {} for ats in ("greenhouse", "lever", "ashby")
+            if isinstance(data.get(ats), dict)}
+
+
+def _ats_date(value) -> str:
+    """ISO string or epoch-milliseconds → YYYY-MM-DD ('' if unparseable)."""
+    if isinstance(value, (int, float)) and value > 0:
+        return datetime.fromtimestamp(value / 1000).strftime("%Y-%m-%d")
+    return str(value or "")[:10]
+
+
+def _ats_fetch_raw(ats: str, slug: str, name: str) -> list:
+    """Download one company's feed and normalize it (cached for 15 min)."""
+    key = (ats, slug)
+    with _ats_feed_lock:
+        hit = _ats_feed_cache.get(key)
+        if hit and time.time() - hit[0] < _ATS_FEED_TTL:
+            return hit[1]
+
+    try:
+        jobs = _ats_parse(ats, slug, name, _json_session())
+    except Exception as e:   # malformed feed — skip this company, keep the rest
+        logger.warning(f"Company sites: {ats}/{slug} feed unreadable ({e})")
+        return []
+    if jobs is None:         # download failed — don't cache, retry next search
+        return []
+    with _ats_feed_lock:
+        _ats_feed_cache[key] = (time.time(), jobs)
+    return jobs
+
+
+def _ats_parse(ats: str, slug: str, name: str, session: requests.Session):
+    """Return normalized postings, or None when the download failed."""
+    jobs: list = []
+    r = None
+    if ats == "greenhouse":
+        r = _get_with_retry(session, f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
+                            max_attempts=2)
+        for j in (r.json().get("jobs", []) if r is not None else []):
+            loc = (j.get("location") or {}).get("name", "") or ""
+            jobs.append({
+                "title": j.get("title", ""), "company": j.get("company_name") or name,
+                "location": loc, "locations": [loc], "country_code": "",
+                "date_posted": _ats_date(j.get("first_published") or j.get("updated_at")),
+                "job_url": j.get("absolute_url", ""), "job_id": str(j.get("id", "")),
+                "description": "",   # list feed has none — filled per matched job
+                "job_type": "", "is_remote": "remote" in loc.lower(),
+                "_ats": "greenhouse", "_slug": slug,
+            })
+    elif ats == "lever":
+        r = _get_with_retry(session, f"https://api.lever.co/v0/postings/{slug}",
+                            params={"mode": "json"}, max_attempts=2)
+        data = r.json() if r is not None else []
+        for j in (data if isinstance(data, list) else []):
+            cat  = j.get("categories") or {}
+            locs = cat.get("allLocations") or [cat.get("location", "") or ""]
+            desc = " ".join(filter(None, [
+                j.get("descriptionPlain", ""),
+                " ".join(_strip_html(l.get("content", "")) for l in j.get("lists") or []),
+                j.get("additionalPlain", ""),
+            ]))
+            jobs.append({
+                "title": j.get("text", ""), "company": name,
+                "location": "; ".join(locs), "locations": locs,
+                "country_code": str(j.get("country") or "").upper(),
+                "date_posted": _ats_date(j.get("createdAt")),
+                "job_url": j.get("hostedUrl", ""), "job_id": str(j.get("id", "")),
+                "description": re.sub(r"\s+", " ", desc).strip(),
+                "job_type": cat.get("commitment", "") or "",
+                "is_remote": str(j.get("workplaceType", "")).lower() == "remote",
+                "_ats": "lever", "_slug": slug,
+            })
+    elif ats == "ashby":
+        r = _get_with_retry(session, f"https://api.ashbyhq.com/posting-api/job-board/{slug}",
+                            max_attempts=2)
+        for j in (r.json().get("jobs", []) if r is not None else []):
+            if j.get("isListed") is False:
+                continue
+            locs = [j.get("location", "") or ""] + [
+                s.get("location", "") for s in j.get("secondaryLocations") or []
+            ]
+            addr = ((j.get("address") or {}).get("postalAddress") or {})
+            jobs.append({
+                "title": j.get("title", ""), "company": name,
+                "location": "; ".join(filter(None, locs)), "locations": locs,
+                "country_code": str(addr.get("addressCountry") or ""),
+                "date_posted": _ats_date(j.get("publishedAt")),
+                "job_url": j.get("jobUrl", ""), "job_id": str(j.get("id", "")),
+                "description": re.sub(r"\s+", " ", j.get("descriptionPlain", "") or "").strip(),
+                "job_type": re.sub(r"(?<=[a-z])(?=[A-Z])", "-", j.get("employmentType", "") or ""),
+                "is_remote": bool(j.get("isRemote")),
+                "_ats": "ashby", "_slug": slug,
+            })
+
+    return jobs if r is not None else None
+
+
+def _ats_location_ok(job: dict, location: str, country: str) -> bool:
+    """Does an ATS posting fall in the searched city / country / remote region?"""
+    locs = [l.lower() for l in job.get("locations") or [] if l]
+    if not locs:
+        return False
+    loc = (location or "").strip()
+    if country == "Remote (Worldwide)" or loc.lower() in (
+            "worldwide", "remote", "european union", "asia", "latin america"):
+        return job.get("is_remote") or any("remote" in l or "anywhere" in l for l in locs)
+
+    country = country or (loc.split(",")[-1].strip() if "," in loc else loc)
+    country_l = country.lower()
+    code = _COUNTRY_CODES.get(country, "")
+    in_country = (
+        any(country_l in l for l in locs)
+        or (code and job.get("country_code") == code)
+    )
+    city = loc.split(",")[0].strip().lower() if "," in loc else ""
+    if city:
+        names = _CITY_ALIASES.get(city, [city])
+        if any(n in l for l in locs for n in names):
+            return True
+        # "Remote - India" / "India (Remote)" also works for a city search
+        return in_country and (job.get("is_remote") or any("remote" in l for l in locs))
+
+    if in_country:
+        return True
+    from locations import get_cities   # country-wide: any of its known cities
+    cities = [c.split(",")[0].lower() for c in get_cities(country)]
+    names = [n for c in cities for n in _CITY_ALIASES.get(c, [c])]
+    return any(n in l for l in locs for n in names)
+
+
+def _greenhouse_fill_descriptions(jobs: list, workers: int = 8) -> None:
+    """The Greenhouse list feed has no descriptions; fetch them for the
+    (few) matched jobs only — full feeds with content run to megabytes."""
+    def fetch(job):
+        r = _get_with_retry(
+            _json_session(),
+            f"https://boards-api.greenhouse.io/v1/boards/{job['_slug']}/jobs/{job['job_id']}",
+            max_attempts=1, timeout=10,
+        )
+        if r is None:
+            return
+        try:
+            content = html.unescape(r.json().get("content", "") or "")
+        except Exception:
+            return
+        job["description"] = _strip_html(content)
+
+    todo = [j for j in jobs if j["_ats"] == "greenhouse" and not j["description"]]
+    if todo:
+        with ThreadPoolExecutor(max_workers=min(workers, len(todo))) as pool:
+            list(pool.map(fetch, todo))
+
+
+def _company_boards_search(keyword, location, max_results, hours_old, country=""):
+    boards = _load_company_boards()
+    tasks  = [(ats, slug, name) for ats, m in boards.items() for slug, name in m.items()]
+    if not tasks:
+        return _to_dataframe([], "Company sites")
+
+    raw: list = []
+    with ThreadPoolExecutor(max_workers=min(16, len(tasks))) as pool:
+        futures = {pool.submit(_ats_fetch_raw, *t): t for t in tasks}
+        for fut in as_completed(futures):
+            try:
+                raw.extend(fut.result())
+            except Exception as e:
+                logger.warning(f"Company sites: {futures[fut][1]} feed failed ({e})")
+
+    # Every keyword word must be in the title ("software engineer" keeps
+    # "Senior Software Engineer II", drops "Software Sales Manager").
+    words  = [w for w in re.findall(r"[a-z0-9+#.]+", keyword.lower()) if len(w) > 1]
+    cutoff = (datetime.now() - timedelta(hours=hours_old)).strftime("%Y-%m-%d")
+    matched = [
+        j for j in raw
+        if j["title"] and all(w in j["title"].lower() for w in words)
+        and (not j["date_posted"] or j["date_posted"] >= cutoff)
+        and _ats_location_ok(j, location, country)
+    ]
+    matched.sort(key=lambda j: j["date_posted"], reverse=True)
+    matched = [dict(j) for j in matched[:max_results]]   # don't mutate the cache
+    _greenhouse_fill_descriptions(matched)
+
+    jobs = [{k: v for k, v in j.items()
+             if not k.startswith("_") and k not in ("locations", "country_code")}
+            | {"description": j["description"][:4000], "job_level": ""}
+            for j in matched]
+    logger.info(f"Company sites: {len(jobs)} matches from {len(tasks)} company feeds")
+    return _to_dataframe(jobs, "Company sites")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

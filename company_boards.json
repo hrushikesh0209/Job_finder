@@ -1,0 +1,53 @@
+{
+  "_comment": "Companies searched by the 'companies' board via their public Greenhouse / Lever / Ashby job feeds (no key, no scraping). Key = the company's board slug (the last part of boards.greenhouse.io/<slug>, jobs.lever.co/<slug> or jobs.ashbyhq.com/<slug>), value = display name. All verified to have India openings on 2026-10-22; add your own target companies here.",
+  "greenhouse": {
+    "adyen": "Adyen",
+    "agoda": "Agoda",
+    "airbnb": "Airbnb",
+    "anthropic": "Anthropic",
+    "coinbase": "Coinbase",
+    "coursera": "Coursera",
+    "databricks": "Databricks",
+    "datadog": "Datadog",
+    "druva": "Druva",
+    "duolingo": "Duolingo",
+    "elastic": "Elastic",
+    "figma": "Figma",
+    "gitlab": "GitLab",
+    "glance": "Glance",
+    "groww": "Groww",
+    "imc": "IMC Trading",
+    "inmobi": "InMobi",
+    "jumptrading": "Jump Trading",
+    "mixpanel": "Mixpanel",
+    "mongodb": "MongoDB",
+    "okta": "Okta",
+    "purestorage": "Pure Storage",
+    "rubrik": "Rubrik",
+    "scaleai": "Scale AI",
+    "sigmoid": "Sigmoid",
+    "stripe": "Stripe",
+    "towerresearchcapital": "Tower Research Capital",
+    "twilio": "Twilio",
+    "yugabyte": "Yugabyte",
+    "zscaler": "Zscaler"
+  },
+  "lever": {
+    "cred": "CRED",
+    "fampay": "FamPay",
+    "meesho": "Meesho",
+    "mindtickle": "Mindtickle",
+    "spotify": "Spotify",
+    "zeta": "Zeta"
+  },
+  "ashby": {
+    "amplitude": "Amplitude",
+    "atlan": "Atlan",
+    "cursor": "Cursor",
+    "notion": "Notion",
+    "openai": "OpenAI",
+    "sardine": "Sardine",
+    "snowflake": "Snowflake",
+    "tekion": "Tekion"
+  }
+}

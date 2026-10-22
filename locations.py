@@ -262,6 +262,7 @@ PLATFORM_INFO: dict[str, dict] = {
     "rozee":     {"name": "Rozee.pk (often blocked)",  "url": "rozee.pk"},
     "adzuna":    {"name": "Adzuna (API key)",    "url": "developer.adzuna.com"},
     "jooble":    {"name": "Jooble (API key)",    "url": "jooble.org/api/about"},
+    "companies": {"name": "Company career sites", "url": "company_boards.json"},
 }
 # * Indeed requires Playwright:  pip install playwright && playwright install chromium
 # Adzuna needs ADZUNA_APP_ID + ADZUNA_APP_KEY env vars; Jooble needs JOOBLE_API_KEY.
@@ -286,6 +287,10 @@ def get_recommended_sites(country: str) -> list[str]:
     automatically once their keys are configured.
     """
     sites = list(COUNTRY_PLATFORMS.get(country, ["linkedin", "indeed"]))
+    # Direct company career feeds (Greenhouse/Lever/Ashby): fresh postings
+    # that apply straight to the employer — location-filtered, so safe
+    # everywhere.
+    sites.append("companies")
     if country != "Remote (Worldwide)":
         if os.getenv("ADZUNA_APP_ID") and os.getenv("ADZUNA_APP_KEY")                 and country in _ADZUNA_COUNTRIES:
             sites.append("adzuna")

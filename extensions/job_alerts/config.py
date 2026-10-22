@@ -17,7 +17,7 @@ DEFAULT_CONFIG_PATH = EXTENSION_DIR / "config.json"
 SUPPORTED_SITES = {
     "linkedin", "indeed", "remoteok", "remotive", "jobicy", "arbeitnow",
     "themuse", "naukri", "seek", "jobstreet", "bayt", "reed", "rozee",
-    "adzuna", "jooble",
+    "adzuna", "jooble", "companies",
 }
 INTERVAL_HOURS = {1, 3, 6, 12}
 PROFILE_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")

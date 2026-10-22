@@ -22,6 +22,11 @@ Private values belong in GitHub repository secrets:
 
 ## Configure Profiles
 
+Add `"companies"` to a profile's `sites` to include the public Greenhouse /
+Lever / Ashby career feeds of the companies listed in the repo-root
+`company_boards.json` — fresh postings with full descriptions that apply
+directly on the employer's site. Edit that file to add target companies.
+
 Edit `config.json`. Profiles are disabled by default. Set `enabled` to `true`
 only after the secrets and workflow permissions are configured.
 
