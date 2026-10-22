@@ -12,3 +12,4 @@ Thumbs.db
 
 .streamlit/
 job_tracker.json
+.env
