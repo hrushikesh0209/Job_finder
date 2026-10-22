@@ -4,6 +4,7 @@ Command-line interface - alternative to the Streamlit UI.
 Examples:
     python run.py --keyword "Python Developer" --location "Remote"
     python run.py --keyword "Data Analyst" --location "Berlin" --cv my_cv.pdf
+    python run.py --keyword "Software Engineer" --location "Hyderabad, India" --country India
     python run.py --keyword "DevOps Engineer" --location "London" --sites linkedin indeed --hours 48 --max-jobs 30
 """
 
@@ -27,6 +28,8 @@ def main():
     p.add_argument("--cv",        help="Path to your CV (.docx or .pdf)")
     p.add_argument("--output",    help="Output Excel path (auto-named if omitted)")
     p.add_argument("--remote",    action="store_true", help="Remote jobs only")
+    p.add_argument("--country",   default="",
+                   help='e.g. "India" — picks Indeed/Adzuna/JobStreet/Bayt country sites')
     args = p.parse_args()
 
     print(f"\n{'='*55}")
@@ -42,6 +45,7 @@ def main():
         hours_old=args.hours,
         sites=args.sites,
         remote_only=args.remote,
+        country=args.country,
     )
 
     if df is None or df.empty:

@@ -68,7 +68,11 @@ def _search(profile: dict[str, Any]) -> pd.DataFrame:
         sys.path.insert(0, root)
     from scraper import search_jobs_multi
 
-    needs_scores = profile_needs_scoring(profile)
+    # The experience filter reads the description too — without it every
+    # LinkedIn card (title only) would pass a "2-5 years" filter unchecked.
+    needs_descriptions = profile_needs_scoring(profile) or bool(
+        profile.get("experience", {}).get("enabled", False)
+    )
     return search_jobs_multi(
         keywords=[str(value).strip() for value in profile["titles"] if str(value).strip()],
         location=build_location(profile["country"], profile.get("city", "")),
@@ -76,7 +80,7 @@ def _search(profile: dict[str, Any]) -> pd.DataFrame:
         hours_old=int(profile["hours_old"]),
         sites=list(profile["sites"]),
         remote_only=bool(profile.get("remote_only", False)),
-        fetch_full_descriptions=needs_scores,
+        fetch_full_descriptions=needs_descriptions,
         desc_workers=5,
         country=profile["country"],
     )

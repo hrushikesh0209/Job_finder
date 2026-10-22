@@ -257,7 +257,57 @@ _SKILLS = [
     # Business
     "project management", "product management", "leadership",
     "communication", "excel", "powerpoint", "salesforce", "crm",
+    # Common SWE-interview / backend asks (Indian product & service companies)
+    ".net", "hibernate", "kafka", "rabbitmq", "nginx", "selenium", "junit",
+    "pytest", "data structures", "algorithms", "system design", "oop",
+    "design patterns", "unit testing",
 ]
+
+# Alternate spellings → canonical skill, so "Postgres" in a job and
+# "PostgreSQL" in the CV count as the same keyword. Regex fragments, matched
+# on lowercased text with the same word-boundary guards as the skills.
+_SKILL_ALIASES: dict[str, list[str]] = {
+    "postgresql":       [r"postgres"],
+    "kubernetes":       [r"k8s"],
+    "node.js":          [r"nodejs", r"node js"],
+    "react":            [r"react\.?js", r"react native"],
+    "vue":              [r"vue\.?js"],
+    "next.js":          [r"nextjs", r"next js"],
+    "javascript":       [r"js", r"es6"],
+    "typescript":       [r"ts(?=\s*[,/;)|])"],
+    "machine learning": [r"ml"],
+    "aws":              [r"amazon web services"],
+    "gcp":              [r"google cloud platform"],
+    "scikit-learn":     [r"sklearn", r"scikit learn"],
+    "ci/cd":            [r"ci\s*/\s*cd", r"ci-cd", r"cicd", r"continuous integration"],
+    "rest":             [r"restful", r"rest(?:ful)?\s*apis?", r"rest\s+services"],
+    ".net":             [r"dotnet", r"\.net core"],
+    "c#":               [r"csharp"],
+    "excel":            [r"(?:ms|microsoft|advanced)\s+excel"],
+    "express":          [r"express\.?js"],
+    "swift":            [r"swiftui"],
+    "spark":            [r"pyspark", r"apache spark", r"spark sql"],
+    "rails":            [r"ruby on rails"],
+    "microservices":    [r"micro-services", r"microservice"],
+    "oop":              [r"oops", r"object[- ]oriented(?: programming| design)?"],
+    "data structures":  [r"dsa"],
+    "llm":              [r"llms", r"large language models?"],
+}
+
+# Skills that are also everyday English ("rest assured", "excel in",
+# "express interest", "swift response", "spring hiring"). Count them only in
+# a list context ("Java, Spring, SQL") or right before a tech word.
+_LIST_CONTEXT_SKILLS: dict[str, str] = {
+    "rest":    "",
+    "excel":   "spreadsheets?|vba|macros|formulas|pivot",
+    "express": "framework",
+    "swift":   "programming|language|developer|ui",
+    "spring":  "boot|framework|mvc|cloud|security|data",
+    "rails":   "framework",
+    "spark":   "streaming|jobs?|cluster",
+    "dart":    "programming|language",
+    "helm":    "charts?",
+}
 
 def _compile_skill(s: str) -> re.Pattern:
     # \b fails next to "+" / "#" (non-word chars), so "c++" and "c#" need
@@ -266,6 +316,17 @@ def _compile_skill(s: str) -> re.Pattern:
     # patterns run ~180× per description — case-sensitive matching is faster.
     esc = re.escape(s)
     return re.compile(rf"(?<![\w+#]){esc}(?![\w+#])")
+
+
+def _compile_list_context(s: str, after_words: str) -> re.Pattern:
+    """Match `s` only when a list separator or one of `after_words` follows —
+    "Excel, SQL" / "Spring Boot" but not "excel in a team" (a separator
+    *before* the word proves nothing: "rest assured, excel in ...")."""
+    esc   = re.escape(s)
+    after = r"\s*(?:[,/;)|]|\.(?:\s|$)|$)"
+    if after_words:
+        after += rf"|\s+(?:{after_words})\b"
+    return re.compile(rf"(?<![\w+#]){esc}(?![\w+#])(?={after})", re.MULTILINE)
 
 
 # Pre-compile patterns once for speed
@@ -277,6 +338,14 @@ _SKILL_PATTERNS["go"] = re.compile(
     r"\bgolang\b|\bgo\b(?=\s*(?:[,/;)|]|$|\s(?:programming|developer|language|lang|engineer)))",
     re.MULTILINE,
 )
+for _s, _after in _LIST_CONTEXT_SKILLS.items():
+    _SKILL_PATTERNS[_s] = _compile_list_context(_s, _after)
+for _s, _aliases in _SKILL_ALIASES.items():
+    _alias_re = "|".join(_aliases)
+    _SKILL_PATTERNS[_s] = re.compile(
+        rf"(?:{_SKILL_PATTERNS[_s].pattern})|(?<![\w+#])(?:{_alias_re})(?![\w+#])",
+        re.MULTILINE,
+    )
 
 
 def extract_skills(text: str) -> set:
@@ -307,6 +376,60 @@ def keyword_gap(cv_text: str, job_description: str, cv_skills: set = None) -> di
         "missing_skills": sorted(missing),
         "total_job_skills": len(in_job),
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# EXPERIENCE REQUIREMENT
+# Shared by the Streamlit app and the job-alerts extension so both read a
+# posting's "2-5 years" the same way.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_EXP_RANGE_RE  = re.compile(
+    r"(\d{1,2})\s*(?:-|–|—|to)\s*(\d{1,2})\s*\+?\s*(?:years?|yrs?)\b", re.IGNORECASE)
+_EXP_PLUS_RE   = re.compile(r"(\d{1,2})\s*\+\s*(?:years?|yrs?)\b", re.IGNORECASE)
+_EXP_MIN_RE    = re.compile(
+    r"(?:at least|minimum|min\.?)\s+(\d{1,2})\s*(?:years?|yrs?)\b", re.IGNORECASE)
+_EXP_SINGLE_RE = re.compile(
+    r"(\d{1,2})\s*(?:years?|yrs?)['’]?\s*(?:of\s+)?(?:[\w/+-]+\s+){0,3}experience",
+    re.IGNORECASE)
+
+EXP_OPEN_MAX = 99   # stand-in upper bound for open-ended "5+ years"
+_EXP_MAX_PLAUSIBLE = 25   # "30 years" is company history, not a requirement
+
+# "Founded in 1998 with 20 years of experience serving clients" describes the
+# company — such matches must not hide a job from a 2–5 year candidate.
+_EXP_COMPANY_BEFORE = re.compile(
+    r"\b(?:founded|established|since|history|legacy|track record|in business|"
+    r"company|organi[sz]ation|firm|we have|we've|decades?)\b", re.IGNORECASE)
+_EXP_COMPANY_AFTER = re.compile(
+    r"^\W*(?:serving|in the (?:industry|market|business)|of excellence|"
+    r"of (?:trusted|proven) )", re.IGNORECASE)
+
+
+def _is_company_context(text: str, m: re.Match) -> bool:
+    before = text[max(0, m.start() - 60):m.start()]
+    after  = text[m.end():m.end() + 40]
+    return bool(_EXP_COMPANY_BEFORE.search(before) or _EXP_COMPANY_AFTER.search(after))
+
+
+def extract_experience_range(text: str):
+    """Return (min_years, max_years) required by a job posting, or None.
+    "5+ years" / "minimum 5 years" / "5 years of experience" are treated as
+    open-ended minimums (max = EXP_OPEN_MAX)."""
+    if not text:
+        return None
+    for rx, is_range in ((_EXP_RANGE_RE, True), (_EXP_PLUS_RE, False),
+                         (_EXP_MIN_RE, False), (_EXP_SINGLE_RE, False)):
+        for m in rx.finditer(text):
+            if _is_company_context(text, m):
+                continue
+            lo = int(m.group(1))
+            hi = int(m.group(2)) if is_range else EXP_OPEN_MAX
+            lo, hi = min(lo, hi), max(lo, hi)
+            if lo > _EXP_MAX_PLAUSIBLE:
+                continue
+            return lo, hi
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────

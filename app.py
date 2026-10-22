@@ -20,6 +20,7 @@ from scraper import (
 )
 from cv_analyzer import (
     read_cv, score_cv_against_jobs, extract_skills,
+    extract_experience_range, EXP_OPEN_MAX,
     ai_suggestions, ai_cover_letter, ai_tailored_cv, ai_interview_prep,
 )
 from excel_exporter import export_to_excel
@@ -104,15 +105,30 @@ def _csv_safe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+class _EmptySearch(Exception):
+    """Raised inside the cached search so an empty result is NOT cached."""
+
+
+def _cached_search(**kwargs) -> pd.DataFrame:
+    """An empty result usually means a board blocked or rate-limited us —
+    caching it would make "wait 30 s and retry" return the same nothing for
+    15 minutes. st.cache_data doesn't store raised exceptions, so the inner
+    function raises on empty and this wrapper turns that back into a frame."""
+    try:
+        return _cached_search_nonempty(**kwargs)
+    except _EmptySearch:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=900, show_spinner=False)
-def _cached_search(keywords: tuple, location: str, max_results: int, hours_old: int,
-                   sites: tuple, remote_only: bool, fetch_desc: bool,
-                   _desc_workers: int, country: str) -> pd.DataFrame:
+def _cached_search_nonempty(keywords: tuple, location: str, max_results: int, hours_old: int,
+                            sites: tuple, remote_only: bool, fetch_desc: bool,
+                            _desc_workers: int, country: str) -> pd.DataFrame:
     """Repeating an identical search within 15 min returns instantly instead
     of re-scraping every board. _desc_workers is underscore-prefixed so it is
     excluded from the cache key — it changes fetch speed, not results, and
     moving the slider must not bust the cache."""
-    return search_jobs_multi(
+    df = search_jobs_multi(
         keywords=list(keywords),
         location=location,
         max_results=max_results,
@@ -123,6 +139,9 @@ def _cached_search(keywords: tuple, location: str, max_results: int, hours_old: 
         desc_workers=_desc_workers,
         country=country,
     )
+    if df is None or df.empty:
+        raise _EmptySearch()
+    return df
 
 
 def _attach_job_skills(df: pd.DataFrame) -> pd.DataFrame:
@@ -220,34 +239,6 @@ def _compute_scores(cv_text: str, df: pd.DataFrame, cv_skills: set = None,
 # Parsed once at search time; jobs that don't state a requirement get NaN and
 # always pass the experience filter (same convention as the date filter).
 
-_EXP_RANGE_RE  = re.compile(
-    r"(\d{1,2})\s*(?:-|–|—|to)\s*(\d{1,2})\s*\+?\s*(?:years?|yrs?)\b", re.IGNORECASE)
-_EXP_PLUS_RE   = re.compile(r"(\d{1,2})\s*\+\s*(?:years?|yrs?)\b", re.IGNORECASE)
-_EXP_MIN_RE    = re.compile(
-    r"(?:at least|minimum|min\.?)\s+(\d{1,2})\s*(?:years?|yrs?)\b", re.IGNORECASE)
-_EXP_SINGLE_RE = re.compile(
-    r"(\d{1,2})\s*(?:years?|yrs?)['’]?\s*(?:of\s+)?(?:[\w/+-]+\s+){0,3}experience",
-    re.IGNORECASE)
-
-_EXP_OPEN_MAX = 99   # stand-in upper bound for open-ended "5+ years"
-
-
-def _extract_exp_range(text: str):
-    """Return (min_years, max_years) required by a job posting, or None.
-    "5+ years" / "minimum 5 years" / "5 years of experience" are treated as
-    open-ended minimums."""
-    if not text:
-        return None
-    m = _EXP_RANGE_RE.search(text)
-    if m:
-        lo, hi = int(m.group(1)), int(m.group(2))
-        return (lo, hi) if lo <= hi else (hi, lo)
-    m = _EXP_PLUS_RE.search(text) or _EXP_MIN_RE.search(text) or _EXP_SINGLE_RE.search(text)
-    if m:
-        return (int(m.group(1)), _EXP_OPEN_MAX)
-    return None
-
-
 def _attach_experience(df: pd.DataFrame) -> pd.DataFrame:
     """Add exp_min / exp_max columns parsed from title + job_level + description
     (job_level covers Naukri, which puts "2-7 Yrs" there)."""
@@ -257,7 +248,7 @@ def _attach_experience(df: pd.DataFrame) -> pd.DataFrame:
         + df["job_level"].fillna("").astype(str) + " · "
         + df["description"].fillna("").astype(str)
     )
-    ranges = [_extract_exp_range(b) for b in blobs]
+    ranges = [extract_experience_range(b) for b in blobs]
     df["exp_min"] = [r[0] if r else None for r in ranges]
     df["exp_max"] = [r[1] if r else None for r in ranges]
     return df
@@ -587,11 +578,15 @@ if search_btn:
             df = _cached_search(
                 keywords=tuple(keywords),
                 location=location,
-                max_results=max_results,
+                # Over-fetch when the experience filter will drop rows, so it
+                # doesn't leave far fewer jobs than "Max Jobs" asked for.
+                max_results=min(int(max_results) * 2, 100) if use_exp else max_results,
                 hours_old=hours_old,
                 sites=tuple(sites),
                 remote_only=remote_only,
-                fetch_desc=fetch_desc,
+                # The experience filter reads descriptions too — LinkedIn cards
+                # alone carry only a title, so every one would pass unchecked.
+                fetch_desc=fetch_desc or use_exp,
                 _desc_workers=desc_workers,
                 country=country,
             )
@@ -606,7 +601,7 @@ if search_btn:
             if use_exp:
                 _no_req  = df["exp_min"].isna()
                 _overlap = (df["exp_min"] <= exp_max_in) & (df["exp_max"] >= exp_min_in)
-                df = df[_no_req | _overlap].reset_index(drop=True)
+                df = df[_no_req | _overlap].head(int(max_results)).reset_index(drop=True)
                 _emptied_by_exp = df.empty
 
         if _emptied_by_exp:
@@ -722,9 +717,9 @@ if df is not None and not df.empty:
 
         # Sort + new-only row
         sc1, sc2, _sp = st.columns([2, 2, 6])
-        _sort_opts = ["Default"]
-        if has_scores:
-            _sort_opts += ["Match %", "ATS %"]
+        # With a CV loaded, rank by fit first — the board round-robin order
+        # buries the best matches on later pages.
+        _sort_opts = ["Best fit", "Default", "Match %", "ATS %"] if has_scores else ["Default"]
         _sort_opts += ["Newest", "Salary"]
         sort_by = sc1.selectbox("Sort by", _sort_opts)
         only_new = (
@@ -750,7 +745,14 @@ if df is not None and not df.empty:
             mask &= df["is_new"] == True
         view = df[mask]
 
-        if sort_by == "Match %":
+        if sort_by == "Best fit":
+            _fit = 0.6 * pd.to_numeric(view["match_score"], errors="coerce").fillna(0)
+            if "ats_score" in view.columns:
+                _fit += 0.4 * pd.to_numeric(view["ats_score"], errors="coerce").fillna(0)
+            view = view.assign(_fit=_fit).sort_values(
+                ["_fit", "date_posted"], ascending=False, kind="stable"
+            ).drop(columns="_fit")
+        elif sort_by == "Match %":
             view = view.sort_values("match_score", ascending=False)
         elif sort_by == "ATS %" and "ats_score" in view.columns:
             view = view.sort_values("ats_score", ascending=False)
@@ -816,7 +818,7 @@ if df is not None and not df.empty:
             _emin, _emax = row.get("exp_min"), row.get("exp_max")
             if _emin is not None and not pd.isna(_emin):
                 exp_str = (
-                    f"{_emin:.0f}+ yrs" if _emax == 99
+                    f"{_emin:.0f}+ yrs" if _emax == EXP_OPEN_MAX
                     else f"{_emin:.0f} yrs" if _emin == _emax
                     else f"{_emin:.0f}–{_emax:.0f} yrs"
                 )
@@ -1208,14 +1210,11 @@ else:
 |---------|--------|
 | Remote (Worldwide) | LinkedIn, RemoteOK, Remotive, Jobicy |
 | United States / Canada | LinkedIn, Indeed, The Muse |
-| India | LinkedIn, Indeed, Naukri |
-| Australia / NZ | LinkedIn, Seek |
-| UK | LinkedIn, Indeed, Reed |
 | Germany / Austria | LinkedIn, Indeed, Arbeitnow |
-| UAE / Saudi / Gulf | LinkedIn, Bayt |
-| Malaysia / Philippines / Singapore / Indonesia | LinkedIn, JobStreet |
-| Pakistan | LinkedIn, Rozee.pk |
-| All others | LinkedIn, Indeed |
+| All others (incl. India, UK, UAE, Australia, SE Asia) | LinkedIn, Indeed (country site) |
+
+Adzuna / Jooble / Reed API are added automatically when their keys are set.
+Naukri, Bayt, Seek, JobStreet and Rozee block automated requests — still selectable, not pre-selected.
             """
         )
     st.info("Select options in the sidebar and click **Search Jobs 🚀** to begin.")

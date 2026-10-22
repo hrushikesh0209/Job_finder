@@ -2,40 +2,19 @@
 
 from __future__ import annotations
 
-import re
+import sys
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-_EXP_RANGE_RE = re.compile(
-    r"(\d{1,2})\s*(?:-|\u2013|\u2014|to)\s*(\d{1,2})\s*\+?\s*(?:years?|yrs?)\b",
-    re.IGNORECASE,
-)
-_EXP_PLUS_RE = re.compile(r"(\d{1,2})\s*\+\s*(?:years?|yrs?)\b", re.IGNORECASE)
-_EXP_MIN_RE = re.compile(
-    r"(?:at least|minimum|min\.?)\s+(\d{1,2})\s*(?:years?|yrs?)\b",
-    re.IGNORECASE,
-)
-_EXP_SINGLE_RE = re.compile(
-    r"(\d{1,2})\s*(?:years?|yrs?)(?:'|\u2019)?\s*(?:of\s+)?"
-    r"(?:[\w/+-]+\s+){0,3}experience",
-    re.IGNORECASE,
-)
-_EXP_OPEN_MAX = 99
-
-
-def extract_experience_range(text: str) -> tuple[int, int] | None:
-    if not text:
-        return None
-    match = _EXP_RANGE_RE.search(text)
-    if match:
-        low, high = int(match.group(1)), int(match.group(2))
-        return (low, high) if low <= high else (high, low)
-    match = _EXP_PLUS_RE.search(text) or _EXP_MIN_RE.search(text) or _EXP_SINGLE_RE.search(text)
-    if match:
-        return int(match.group(1)), _EXP_OPEN_MAX
-    return None
+# Same parser as the Streamlit portal, so an alert and an in-app search agree
+# on what "2-5 years" means for a posting.
+from cv_analyzer import extract_experience_range  # noqa: E402
 
 
 def _text_column(df: pd.DataFrame, name: str) -> pd.Series:

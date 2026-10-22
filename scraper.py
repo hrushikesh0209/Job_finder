@@ -377,7 +377,7 @@ def search_jobs(
             keyword, location, max_results, hours_old,
             fetch_full_descriptions, desc_workers, remote_only,
         ),
-        "indeed":    lambda: _indeed_search(keyword, location, max_results, hours_old),
+        "indeed":    lambda: _indeed_search(keyword, location, max_results, hours_old, country),
         "remoteok":  lambda: _remoteok_search(keyword, location, max_results, hours_old),
         "remotive":  lambda: _remotive_search(keyword, location, max_results, hours_old),
         "jobicy":    lambda: _jobicy_search(keyword, location, max_results, hours_old),
@@ -522,7 +522,10 @@ _LI_COMPANY_SELS = ["h4.base-search-card__subtitle", "h4", ".base-search-card__i
 _LI_LOC_SELS     = ["span.job-search-card__location", ".job-search-card__location"]
 _LI_LINK_SELS    = ["a.base-card__full-link", "a[href*='/jobs/view/']"]
 
-_LI_JOB_ID_RE = re.compile(r"/(\d{7,19})(?:[/?]|$)")
+# Job links look like /jobs/view/<title-slug>-at-<company>-4471646111 (older
+# links: /jobs/view/4471646111) — the ID follows either "-" or "/".
+_LI_JOB_ID_RE = re.compile(r"[-/](\d{7,19})(?:[/?]|$)")
+_LI_URN_RE    = re.compile(r"jobPosting:(\d{7,19})")
 
 
 def _linkedin_search(keyword, location, max_results, hours_old, fetch_desc,
@@ -691,6 +694,12 @@ def _li_parse_card(card, cutoff: datetime):
         m = _LI_JOB_ID_RE.search(link)
         if m:
             job_id = m.group(1)
+    if not job_id:
+        # The card carries data-entity-urn="urn:li:jobPosting:<id>"
+        urn_el = card if card.get("data-entity-urn") else card.find(attrs={"data-entity-urn": True})
+        m = _LI_URN_RE.search(urn_el.get("data-entity-urn", "")) if urn_el else None
+        if m:
+            job_id = m.group(1)
 
     posted_str = ""
     if time_el:
@@ -729,14 +738,37 @@ _INDEED_TITLE_SELS   = ["span[id^='jobTitle']", "h2.jobTitle span", "h2 span[tit
 _INDEED_COMPANY_SELS = ["[data-testid='company-name']", "span.companyName", ".companyName"]
 _INDEED_LOC_SELS     = ["[data-testid='text-location']", "div.companyLocation", ".companyLocation"]
 
+# www.indeed.com only searches the US — a "Bengaluru, India" query there
+# returns US jobs. Each country has its own Indeed site.
+_INDEED_DOMAINS: dict[str, str] = {
+    "India": "in.indeed.com",          "United Kingdom": "uk.indeed.com",
+    "Canada": "ca.indeed.com",         "Australia": "au.indeed.com",
+    "New Zealand": "nz.indeed.com",    "Ireland": "ie.indeed.com",
+    "Germany": "de.indeed.com",        "Austria": "at.indeed.com",
+    "Switzerland": "ch.indeed.com",    "France": "fr.indeed.com",
+    "Netherlands": "nl.indeed.com",    "Belgium": "be.indeed.com",
+    "Spain": "es.indeed.com",          "Italy": "it.indeed.com",
+    "Poland": "pl.indeed.com",         "Singapore": "sg.indeed.com",
+    "Malaysia": "malaysia.indeed.com", "Philippines": "ph.indeed.com",
+    "UAE": "ae.indeed.com",            "Pakistan": "pk.indeed.com",
+    "South Africa": "za.indeed.com",   "Brazil": "br.indeed.com",
+    "Mexico": "mx.indeed.com",         "Japan": "jp.indeed.com",
+}
 
-def _indeed_playwright_jobs(keyword: str, location: str, max_results: int, hours_old: int) -> list:
+
+def _indeed_domain(country: str) -> str:
+    return _INDEED_DOMAINS.get(country, "www.indeed.com")
+
+
+def _indeed_playwright_jobs(keyword: str, location: str, max_results: int, hours_old: int,
+                            country: str = "") -> list:
     """
-    Scrape Indeed.com using headless Playwright Chromium.
-    Bypasses Cloudflare JS challenge that defeats curl_cffi.
+    Scrape Indeed using headless Playwright Chromium, on the country's own
+    Indeed site. Bypasses Cloudflare JS challenge that defeats curl_cffi.
     """
     from urllib.parse import quote as _quote
     age_days = max(1, min(hours_old // 24, 30))
+    base = f"https://{_indeed_domain(country)}"
     jobs: list = []
 
     with _sync_playwright() as pw:
@@ -764,7 +796,7 @@ def _indeed_playwright_jobs(keyword: str, location: str, max_results: int, hours
         start = 0
         while len(jobs) < max_results:
             url = (
-                f"https://www.indeed.com/jobs"
+                f"{base}/jobs"
                 f"?q={_quote(keyword)}&l={_quote(location)}"
                 f"&fromage={age_days}&start={start}"
             )
@@ -799,11 +831,11 @@ def _indeed_playwright_jobs(keyword: str, location: str, max_results: int, hours
                     a_jk = card.select_one("a[data-jk]")
                     jk = a_jk.get("data-jk", "") if a_jk else ""
                 if jk:
-                    job_url = f"https://www.indeed.com/viewjob?jk={jk}"
+                    job_url = f"{base}/viewjob?jk={jk}"
                 else:
                     a = card.select_one("a[href*='viewjob'], a[href*='/rc/clk'], h2 a[href]")
                     href = a.get("href", "") if a else ""
-                    job_url = ("https://www.indeed.com" + href) if href.startswith("/") else href
+                    job_url = (base + href) if href.startswith("/") else href
 
                 jobs.append({
                     "title":       title,
@@ -839,7 +871,7 @@ def _indeed_playwright_jobs(keyword: str, location: str, max_results: int, hours
     return jobs
 
 
-def _indeed_search(keyword, location, max_results, hours_old):
+def _indeed_search(keyword, location, max_results, hours_old, country=""):
     """
     Fetch Indeed jobs via headless Playwright Chromium — the only method that
     passes Indeed's Cloudflare JS challenge. The old RSS feed is discontinued
@@ -855,7 +887,7 @@ def _indeed_search(keyword, location, max_results, hours_old):
         return _to_dataframe([], "Indeed")
 
     logger.info("Indeed: using Playwright headless browser (bypasses JS challenge)")
-    jobs = _indeed_playwright_jobs(keyword, location, max_results, hours_old)
+    jobs = _indeed_playwright_jobs(keyword, location, max_results, hours_old, country)
     logger.info(f"Indeed: {len(jobs)} listings collected")
     return _to_dataframe(jobs, "Indeed")
 
@@ -878,71 +910,53 @@ _REMOTEOK_API = "https://remoteok.com/api"
 def _remoteok_search(keyword, location, max_results, hours_old):
     """
     RemoteOK open JSON API — no Cloudflare, no auth, no API key required.
-    Tag-filtered results naturally span 30-90 days regardless of hours_old,
-    so we skip the strict date cutoff and just return the freshest N jobs.
+
+    Multi-word tags rarely exist ("software-engineer" → 0 jobs) and broad
+    single-word tag pools can be months old, so merge the untagged feed (the
+    ~100 newest jobs) with the full-slug and last-word tag feeds, match every
+    keyword word client-side, and return the freshest first. The shared
+    hours_old filter in search_jobs() then drops anything stale.
     """
-    session = requests.Session()
-    session.headers.update(_HEADERS)
-    session.headers["Accept"] = "application/json"
+    session = _json_session()
 
-    # RemoteOK tag search — try full keyword slug first (e.g. "machine-learning"),
-    # fall back to first word if that returns no results (e.g. "python").
-    full_tag  = _slugify(keyword)
-    first_tag = _slugify(keyword.split()[0]) if keyword.strip() else full_tag
+    full_tag = _slugify(keyword)
+    words    = [w for w in re.findall(r"[a-z0-9+#.]+", keyword.lower()) if len(w) > 2]
+    last_tag = _slugify(words[-1]) if words else ""
 
-    r = _get_with_retry(session, _REMOTEOK_API, params={"tag": full_tag})
-    if r is None:
-        logger.warning("RemoteOK: request failed")
-        return _to_dataframe([], "RemoteOK")
+    items: dict[str, dict] = {}
+    for params in ({}, {"tag": full_tag}, {"tag": last_tag}):
+        if "tag" in params and not params["tag"]:
+            continue
+        r = _get_with_retry(session, _REMOTEOK_API, params=params)
+        if r is None:
+            continue
+        try:
+            data = r.json()
+        except Exception:
+            logger.warning("RemoteOK: JSON parse error")
+            continue
+        # index 0 = legal/metadata notice — skip it
+        for item in (data[1:] if isinstance(data, list) else []):
+            if isinstance(item, dict) and item.get("position"):
+                items.setdefault(str(item.get("id", "")), item)
 
-    # If the full slug returned only the metadata row (no jobs), retry with first word
-    try:
-        _probe = r.json()
-        if isinstance(_probe, list) and len(_probe) < 2 and full_tag != first_tag:
-            r2 = _get_with_retry(session, _REMOTEOK_API, params={"tag": first_tag})
-            if r2 is not None:
-                r = r2
-    except Exception:
-        pass
+    def _epoch(item) -> int:
+        try:
+            return int(item.get("epoch") or 0)
+        except (TypeError, ValueError):
+            return 0
 
-    if r is None:
-        logger.warning("RemoteOK: request failed")
-        return _to_dataframe([], "RemoteOK")
-
-    try:
-        data = r.json()
-    except Exception:
-        logger.warning("RemoteOK: JSON parse error")
-        return _to_dataframe([], "RemoteOK")
-
-    # index 0 = legal/metadata notice — skip it
-    if not isinstance(data, list) or len(data) < 2:
-        logger.info("RemoteOK: no results for this tag")
-        return _to_dataframe([], "RemoteOK")
-
-    # RemoteOK returns jobs sorted newest-first already.
-    # We skip strict hours_old filtering because tag pools span 30-90 days
-    # and a hard 7-day cutoff would return almost nothing.
     jobs: list = []
-
-    for item in data[1:]:
-        if not isinstance(item, dict):
-            continue
+    for item in sorted(items.values(), key=_epoch, reverse=True):
         title = item.get("position", "")
-        if not title:
+        desc  = _strip_html(item.get("description", "") or "")
+        hay   = " ".join([title, " ".join(item.get("tags", []) or []), desc[:600]]).lower()
+        if words and not all(w in hay for w in words):
             continue
 
-        epoch = item.get("epoch", 0)
         date_posted = ""
-        if epoch:
-            try:
-                date_posted = datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d")
-            except Exception:
-                pass
-
-        desc_raw = item.get("description", "") or ""
-        desc = re.sub(r"<[^>]+>", " ", desc_raw)
-        desc = re.sub(r"\s+", " ", desc).strip()
+        if _epoch(item):
+            date_posted = datetime.fromtimestamp(_epoch(item)).strftime("%Y-%m-%d")
 
         jobs.append({
             "title":       title,
@@ -1285,7 +1299,16 @@ def _naukri_playwright_jobs(keyword: str, location: str, max_results: int, hours
             url = f"https://www.naukri.com/{kw_slug}-jobs-in-{loc_slug}{suffix}"
 
             try:
-                pg.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                resp = pg.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                # Naukri's bot protection (Akamai) answers headless browsers
+                # with a 403 "Access Denied" page — stop now rather than
+                # waiting 15 s for job cards that will never render.
+                if resp is not None and resp.status >= 400:
+                    logger.warning(
+                        f"Naukri: blocked (HTTP {resp.status}) — Naukri's bot protection "
+                        "rejects automated browsers; search it manually."
+                    )
+                    break
                 # Wait for React hydration to populate job tuples
                 pg.wait_for_selector(
                     "article.jobTupleHeader, .srp-jobtuple-wrapper, article[data-job-id]",

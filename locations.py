@@ -2,6 +2,8 @@
 Static data: world countries, major cities, and popular job title suggestions.
 """
 
+import os
+
 # ── Job titles grouped by domain ──────────────────────────────────────────────
 JOB_TITLES: dict[str, list[str]] = {
     "Software Engineering": [
@@ -228,6 +230,10 @@ def build_location_string(country: str, city: str) -> str:
 
 
 # ── Country-specific job platforms ────────────────────────────────────────────
+# Only boards that actually return jobs are pre-selected. As of 2026-10 Naukri,
+# Bayt, Seek, JobStreet, Rozee and Reed's HTML pages answer automated
+# requests with 403/404 "Access Denied", so they stay selectable by hand but
+# are not defaults (Reed is re-added automatically when REED_API_KEY is set).
 COUNTRY_PLATFORMS: dict[str, list[str]] = {
     # Remote boards (RemoteOK/Remotive/Jobicy) ignore location — only
     # recommend them for remote searches.
@@ -235,26 +241,9 @@ COUNTRY_PLATFORMS: dict[str, list[str]] = {
     # Americas
     "United States":  ["linkedin", "indeed", "themuse"],
     "Canada":         ["linkedin", "indeed", "themuse"],
-    # South Asia
-    "India":          ["linkedin", "indeed", "naukri"],
-    "Pakistan":       ["linkedin", "rozee"],
-    # Oceania
-    "Australia":      ["linkedin", "seek"],
-    "New Zealand":    ["linkedin", "seek"],
-    # Middle East
-    "UAE":            ["linkedin", "bayt"],
-    "Saudi Arabia":   ["linkedin", "bayt"],
-    "Jordan":         ["linkedin", "bayt"],
-    "Egypt":          ["linkedin", "bayt"],
     # Europe
-    "United Kingdom": ["linkedin", "indeed", "reed"],
     "Germany":        ["linkedin", "indeed", "arbeitnow"],
     "Austria":        ["linkedin", "indeed", "arbeitnow"],
-    # SE Asia (JobStreet network)
-    "Malaysia":       ["linkedin", "jobstreet"],
-    "Philippines":    ["linkedin", "jobstreet"],
-    "Singapore":      ["linkedin", "jobstreet"],
-    "Indonesia":      ["linkedin", "jobstreet"],
 }
 
 PLATFORM_INFO: dict[str, dict] = {
@@ -265,12 +254,12 @@ PLATFORM_INFO: dict[str, dict] = {
     "jobicy":    {"name": "Jobicy (remote)",     "url": "jobicy.com"},
     "arbeitnow": {"name": "Arbeitnow (DE/EU)",   "url": "arbeitnow.com"},
     "themuse":   {"name": "The Muse (US)",       "url": "themuse.com"},
-    "naukri":    {"name": "Naukri",              "url": "naukri.com"},
-    "seek":      {"name": "Seek",                "url": "seek.com.au"},
-    "bayt":      {"name": "Bayt",                "url": "bayt.com"},
-    "reed":      {"name": "Reed",                "url": "reed.co.uk"},
-    "jobstreet": {"name": "JobStreet",           "url": "jobstreet.com"},
-    "rozee":     {"name": "Rozee.pk",            "url": "rozee.pk"},
+    "naukri":    {"name": "Naukri (often blocked)",    "url": "naukri.com"},
+    "seek":      {"name": "Seek (often blocked)",      "url": "seek.com.au"},
+    "bayt":      {"name": "Bayt (often blocked)",      "url": "bayt.com"},
+    "reed":      {"name": "Reed",                      "url": "reed.co.uk"},
+    "jobstreet": {"name": "JobStreet (often blocked)", "url": "jobstreet.com"},
+    "rozee":     {"name": "Rozee.pk (often blocked)",  "url": "rozee.pk"},
     "adzuna":    {"name": "Adzuna (API key)",    "url": "developer.adzuna.com"},
     "jooble":    {"name": "Jooble (API key)",    "url": "jooble.org/api/about"},
 }
@@ -281,10 +270,27 @@ PLATFORM_INFO: dict[str, dict] = {
 ALL_PLATFORMS: list[str] = list(PLATFORM_INFO.keys())
 
 
+# Countries the Adzuna API covers (mirrors scraper._ADZUNA_COUNTRY_CODES)
+_ADZUNA_COUNTRIES = {
+    "United Kingdom", "United States", "Australia", "Austria", "Belgium", "Brazil",
+    "Canada", "Switzerland", "Germany", "Spain", "France", "India", "Italy",
+    "Mexico", "Netherlands", "New Zealand", "Poland", "Singapore", "South Africa",
+}
+
+
 def get_recommended_sites(country: str) -> list[str]:
     """
     Return recommended job boards for a given country.
-    Defaults to LinkedIn + Indeed (Indeed needs Playwright installed;
-    it returns empty with a logged warning otherwise).
+    Defaults to LinkedIn + Indeed (Indeed needs Playwright installed and
+    searches the country's own Indeed site). Key-based APIs are added
+    automatically once their keys are configured.
     """
-    return COUNTRY_PLATFORMS.get(country, ["linkedin", "indeed"])
+    sites = list(COUNTRY_PLATFORMS.get(country, ["linkedin", "indeed"]))
+    if country != "Remote (Worldwide)":
+        if os.getenv("ADZUNA_APP_ID") and os.getenv("ADZUNA_APP_KEY")                 and country in _ADZUNA_COUNTRIES:
+            sites.append("adzuna")
+        if os.getenv("JOOBLE_API_KEY"):
+            sites.append("jooble")
+        if os.getenv("REED_API_KEY") and country == "United Kingdom":
+            sites.append("reed")
+    return sites
